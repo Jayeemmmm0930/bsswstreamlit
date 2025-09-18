@@ -5,6 +5,7 @@ import tempfile
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import plotly.io as pio  # ✅ added for safe image export
 
 from reportlab.platypus import (
     SimpleDocTemplate,
@@ -202,11 +203,12 @@ def generate_pdf(deans_list, probation, fig_gpa, fig_prog):
         elements.append(Paragraph("No students under probation.", styles["Normal"]))
     elements.append(Spacer(1, 20))
 
-    # Save charts temporarily and add them
+    # Save charts temporarily using to_image (instead of write_image)
     tmpfiles = []
     for fig in [fig_gpa, fig_prog]:
         with tempfile.NamedTemporaryFile(delete=False, suffix=".png") as tmp:
-            fig.write_image(tmp.name, format="png")
+            img_bytes = pio.to_image(fig, format="png")  # ✅ safer export
+            tmp.write(img_bytes)
             tmpfiles.append(tmp.name)
             elements.append(Image(tmp.name, width=400, height=250))
             elements.append(Spacer(1, 20))
