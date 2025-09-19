@@ -62,12 +62,11 @@ def get_old_curriculum_difficulty(student_id):
             subject = subjects.get(subject_id, {})
             grade = g["Grades"][idx]
 
-            # Count how many students took this subject
             total_students = sum(
                 1 for gr in grades if subject_id in gr["SubjectCodes"]
             )
 
-            # Example distribution (replace with real logic if you have)
+            # Example distribution (replace with actual if available)
             dist = {
                 "90-100 (%)": 20,
                 "80-89 (%)": 25,
@@ -104,11 +103,8 @@ def get_new_curriculum_difficulty(student_id):
         subject = subjects.get(subject_id, {})
         grade = g.get("numericGrade", None)
 
-        # Count total students for this subject
-        # Method 1: from grades
         total_students = sum(1 for gr in grades if gr["subjectId"] == subject_id)
 
-        # Method 2: from sections (better if available)
         for sec in sections:
             if sec["subjectId"] == subject_id:
                 total_students = len(sec.get("studentIds", []))
@@ -144,26 +140,73 @@ def generate_pdf(df, fig, student_name):
     styles = getSampleStyleSheet()
     elements = []
 
+    # Title
     elements.append(Paragraph(f"Subject Difficulty Report - {student_name}", styles["Title"]))
     elements.append(Spacer(1, 12))
 
+    # Convert dataframe into table format
     table_data = [df.columns.tolist()] + df.astype(str).values.tolist()
     table = Table(table_data, repeatRows=1, hAlign="LEFT")
-    table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F81BD")),
+
+    # Table style
+    style = TableStyle([
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),  # dark blue header
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("ALIGN", (0, 0), (1, -1), "LEFT"),   # course code/name left
+        ("ALIGN", (2, 0), (-2, -1), "RIGHT"), # numeric values right
+        ("ALIGN", (-1, 0), (-1, -1), "CENTER"), # difficulty center
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
-    ]))
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
+    ])
+
+    # Row striping + conditional formatting
+    for i in range(1, len(table_data)):
+        bg_color = colors.whitesmoke if i % 2 == 0 else colors.white
+        style.add("BACKGROUND", (0, i), (-1, i), bg_color)
+
+        # Failing grades
+        try:
+            grade_val = float(table_data[i][df.columns.get_loc("Your Grade (%)")])
+            if grade_val < 60:
+                style.add("TEXTCOLOR", (df.columns.get_loc("Your Grade (%)"), i),
+                          (df.columns.get_loc("Your Grade (%)"), i), colors.red)
+                style.add("FONTNAME", (df.columns.get_loc("Your Grade (%)"), i),
+                          (df.columns.get_loc("Your Grade (%)"), i), "Helvetica-Bold")
+        except Exception:
+            pass
+
+        # Difficulty level colors
+        diff_col = df.columns.get_loc("Difficulty Level")
+        diff_val = table_data[i][diff_col]
+        if diff_val == "High":
+            style.add("TEXTCOLOR", (diff_col, i), (diff_col, i), colors.red)
+        elif diff_val == "Medium":
+            style.add("TEXTCOLOR", (diff_col, i), (diff_col, i), colors.orange)
+        elif diff_val == "Low":
+            style.add("TEXTCOLOR", (diff_col, i), (diff_col, i), colors.green)
+
+    table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 20))
 
+    # Chart styling
+    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+    fig.update_layout(
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(size=10),
+    )
+
+    # Save chart as image
     img_buffer = io.BytesIO()
-    fig.write_image(img_buffer, format="png")
+    fig.write_image(img_buffer, format="png", scale=2)
     img_buffer.seek(0)
     elements.append(Image(img_buffer, width=500, height=300))
 
+    # Build document
     doc.build(elements)
     buffer.seek(0)
     return buffer
@@ -218,6 +261,7 @@ def student_subject_difficulty():
         )
         student_name = filtered_options[student_id]
 
+    # Load difficulty data
     if curriculum == "Old Curriculum":
         df = get_old_curriculum_difficulty(student_id)
     else:
@@ -227,20 +271,24 @@ def student_subject_difficulty():
         st.warning("No subject data found for this student.")
         return
 
-    st.subheader("Subject Performance & Difficulty")
-    st.table(df)
+    st.subheader("📑 Subject Performance & Difficulty")
+    st.dataframe(df)
 
+    # Graph
     fig = px.bar(
         df, x="Course Code", y="Your Grade (%)", color="Difficulty Level",
-        title="Grades vs. Subject Difficulty", text="Your Grade (%)"
+        title="Grades vs. Subject Difficulty", text="Your Grade (%)",
+        color_discrete_map={"High": "red", "Medium": "orange", "Low": "green"}
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    # Cache save
     os.makedirs("cache", exist_ok=True)
     cache_file = f"cache/{student_id}_subject_difficulty.pkl"
     with open(cache_file, "wb") as f:
         pickle.dump(df, f)
 
+    # PDF export
     pdf_buffer = generate_pdf(df, fig, student_name)
     st.download_button(
         label="📥 Download PDF Report",

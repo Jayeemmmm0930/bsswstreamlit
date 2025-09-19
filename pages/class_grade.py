@@ -2,6 +2,9 @@ import io
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import tempfile
+from datetime import datetime
+
 from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4, landscape
@@ -24,14 +27,15 @@ GRADE_BINS = {
 
 
 def compute_distribution(grades):
-    """Compute grade distribution percentages from list of numeric grades."""
+    """Compute grade distribution percentages from list of numeric grades (2 decimal places)."""
     total = len(grades)
     if total == 0:
-        return {col: 0 for col in GRADE_BINS} | {"Total S": 0}
+        return {col: 0.00 for col in GRADE_BINS} | {"Total S": 0}
 
     counts = {}
     for label, (low, high) in GRADE_BINS.items():
-        counts[label] = sum(1 for g in grades if low <= g <= high) / total * 100
+        pct = sum(1 for g in grades if low <= g <= high) / total * 100
+        counts[label] = round(pct, 2)
 
     counts["Total S"] = total
     return counts
@@ -112,39 +116,58 @@ def fetch_distribution_new(professor_id, semester_id):
 
 
 # ==========================
-# PDF Export
+# PDF Export (better table + graph colors)
 # ==========================
 def generate_pdf(df, fig, professor, semester):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4), rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     styles = getSampleStyleSheet()
     elements = []
 
-    elements.append(Paragraph("1. Class Grade Distribution", styles["Title"]))
+    # Title + meta
+    elements.append(Paragraph("1. Class Grade Distribution", styles["Heading2"]))
     elements.append(Paragraph(
-        f"- Displays a histogram of student grade distribution per subject.<br/>"
         f"Faculty Name: {professor}<br/>"
-        f"Semester and School Year: {semester}",
+        f"Semester and School Year: {semester}<br/>"
+        f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
         styles["Normal"]
     ))
     elements.append(Spacer(1, 12))
 
-    # Table
-    table_data = [list(df.columns)] + df.values.tolist()
-    table = Table(table_data, colWidths=[80] * len(df.columns))
-    table.setStyle(TableStyle([
+    # Round percentages again just in case
+    for col in GRADE_BINS.keys():
+        if col in df.columns:
+            df[col] = df[col].round(2)
+
+    # Table with better layout
+    data = [list(df.columns)] + df.astype(str).values.tolist()
+    col_widths = [70, 180] + [60] * (len(df.columns) - 2)  # wider for name
+    table = Table(data, colWidths=col_widths)
+
+    style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightblue),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("ALIGN", (1, 1), (-1, -1), "CENTER"),
-    ]))
+        ("FONTSIZE", (0, 0), (-1, -1), 7),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 6),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.black),
+    ])
+
+    # Alternate row shading
+    for i in range(1, len(data)):
+        if i % 2 == 0:
+            style.add("BACKGROUND", (0, i), (-1, i), colors.whitesmoke)
+
+    table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 20))
 
-    # Histogram image
-    img_bytes = fig.to_image(format="png", width=800, height=400, scale=2)
-    img = Image(io.BytesIO(img_bytes), width=600, height=300)
-    elements.append(img)
+    # Chart (export with colors)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile:
+        fig.write_image(tmpfile.name, width=1000, height=500)
+        elements.append(Image(tmpfile.name, width=700, height=300))
 
     doc.build(elements)
     pdf = buffer.getvalue()
@@ -168,7 +191,7 @@ def class_distribution_view():
         semesters = {s["_id"]: f"{s['Semester']} {s['SchoolYear']}" for s in data_collections["semesters"]}
 
         if role == "professor":
-            professor = username  # 🔒 professor login locks to their name
+            professor = username
         else:
             professor = st.selectbox("👨‍🏫 Select Professor (Full Name)", ["-- Select --"] + all_profs)
 
@@ -184,12 +207,10 @@ def class_distribution_view():
 
     semester = st.selectbox("📅 Select Semester", ["-- Select --"] + list(semesters.values()))
 
-    # --- Do not show results until both selected ---
     if professor == "-- Select --" or semester == "-- Select --":
         st.info("Please select both a Professor and a Semester to view results.")
         return
 
-    # Resolve IDs for New Curriculum
     if curriculum == "Old Curriculum":
         semester_id = [k for k, v in semesters.items() if v == semester][0]
         df = fetch_distribution_old(professor, semester_id)
@@ -202,20 +223,37 @@ def class_distribution_view():
         st.warning("No grade distribution data found for this professor and semester.")
         return
 
-    # --- Show Results ---
+    # Round DataFrame
+    for col in GRADE_BINS.keys():
+        if col in df.columns:
+            df[col] = df[col].round(2)
+
+    # Show Results
     st.subheader(f"📑 Grade Distribution — {professor} ({semester})")
     st.dataframe(df, use_container_width=True)
 
+    # Color palette for graph (fixed)
     dist_cols = list(GRADE_BINS.keys())
+    color_map = {
+        "95-100 (%)": "#2ca02c",
+        "90-94 (%)": "#1f77b4",
+        "85-89 (%)": "#ff7f0e",
+        "80-84 (%)": "#d62728",
+        "75-79 (%)": "#9467bd",
+        "Below 75 (%)": "#8c564b",
+    }
+
     fig = px.bar(
         df,
         x="Course Name",
         y=dist_cols,
         barmode="stack",
-        title=f"Grade Distribution per Subject ({professor}, {semester})"
+        title=f"Grade Distribution per Subject ({professor}, {semester})",
+        color_discrete_map=color_map
     )
     st.plotly_chart(fig, use_container_width=True)
 
+    # Export PDF
     pdf_bytes = generate_pdf(df, fig, professor, semester)
     st.download_button(
         label="⬇️ Download Grade Distribution PDF",

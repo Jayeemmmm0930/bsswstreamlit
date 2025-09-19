@@ -1,14 +1,19 @@
 import os
+import io
 import pickle
 import pandas as pd
 import streamlit as st
 import plotly.express as px
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+import tempfile
+from datetime import datetime
+
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet
 
 from data_collection import data_collections  # MongoDB collections dict
+
 
 # ==========================
 # Cache Setup
@@ -113,32 +118,66 @@ def fetch_incomplete_new():
 
 
 # ==========================
-# PDF Export
+# PDF Export (Fixed)
 # ==========================
-def export_incomplete_pdf(df, filename="incomplete_grades_report.pdf"):
-    doc = SimpleDocTemplate(filename, pagesize=A4)
+def export_incomplete_pdf(df):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=20, leftMargin=20, topMargin=20, bottomMargin=20)
     elements = []
     styles = getSampleStyleSheet()
 
+    # ----- Title + timestamp -----
     elements.append(Paragraph("4. Incomplete Grades Report", styles["Heading2"]))
+    elements.append(Paragraph(f"Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", styles["Normal"]))
     elements.append(Spacer(1, 12))
 
-    # Convert DataFrame to list for table
-    data = [list(df.columns)] + df.values.tolist()
-    table = Table(data, repeatRows=1)
+    # ----- Table -----
+    data = [list(df.columns)]
+    for row in df.values.tolist():
+        data.append([Paragraph(str(cell), styles["Normal"]) for cell in row])
 
+    col_widths = [80, 120, 70, 160, 80, 80]
+    table = Table(data, repeatRows=1, colWidths=col_widths)
     table.setStyle(TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightyellow]),
     ]))
-
     elements.append(table)
+    elements.append(Spacer(1, 20))
+
+    # ----- Graphs -----
+    status_count = df["Grade Status"].value_counts().reset_index()
+    status_count.columns = ["Grade Status", "Count"]
+    fig1 = px.pie(status_count, names="Grade Status", values="Count",
+                  title="Distribution of Incomplete/Dropped", color_discrete_sequence=px.colors.qualitative.Plotly)
+
+    term_count = df.groupby("Term")["Grade Status"].count().reset_index()
+    term_count.columns = ["Term", "Count"]
+    fig2 = px.bar(term_count, x="Term", y="Count", title="Incomplete/Dropped by Term",
+                  color="Count", color_continuous_scale="Blues")
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile1, \
+         tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmpfile2:
+        fig1.write_image(tmpfile1.name, width=500, height=400)
+        fig2.write_image(tmpfile2.name, width=500, height=400)
+
+        elements.append(Paragraph("📊 Graphs", styles["Heading3"]))
+        elements.append(Spacer(1, 12))
+        elements.append(Image(tmpfile1.name, width=400, height=300))
+        elements.append(Spacer(1, 12))
+        elements.append(Image(tmpfile2.name, width=400, height=300))
+
+    # ----- Build PDF -----
     doc.build(elements)
-    return filename
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 # ==========================
@@ -160,7 +199,7 @@ def incomplete_view():
     # 🔍 Search Bar
     search_term = st.text_input("🔍 Search by Student ID or Name")
     if search_term:
-        df = df[df.apply(lambda row: search_term.lower() in str(row["Student ID"]).lower() 
+        df = df[df.apply(lambda row: search_term.lower() in str(row["Student ID"]).lower()
                          or search_term.lower() in str(row["Name"]).lower(), axis=1)]
 
     st.dataframe(df, use_container_width=True)
@@ -171,22 +210,22 @@ def incomplete_view():
     with col1:
         status_count = df["Grade Status"].value_counts().reset_index()
         status_count.columns = ["Grade Status", "Count"]
-        fig1 = px.pie(status_count, names="Grade Status", values="Count", title="Distribution of Incomplete/Dropped")
+        fig1 = px.pie(status_count, names="Grade Status", values="Count",
+                      title="Distribution of Incomplete/Dropped", color_discrete_sequence=px.colors.qualitative.Plotly)
         st.plotly_chart(fig1, use_container_width=True)
 
     with col2:
         term_count = df.groupby("Term")["Grade Status"].count().reset_index()
         term_count.columns = ["Term", "Count"]
-        fig2 = px.bar(term_count, x="Term", y="Count", title="Incomplete/Dropped by Term")
+        fig2 = px.bar(term_count, x="Term", y="Count", title="Incomplete/Dropped by Term",
+                      color="Count", color_continuous_scale="Blues")
         st.plotly_chart(fig2, use_container_width=True)
 
     # Export to PDF
-    if st.button("⬇️ Download Incomplete Grades PDF"):
-        pdf_file = export_incomplete_pdf(df)
-        with open(pdf_file, "rb") as f:
-            st.download_button(
-                label="📥 Save PDF",
-                data=f,
-                file_name="incomplete_grades_report.pdf",
-                mime="application/pdf"
-            )
+    pdf_bytes = export_incomplete_pdf(df)
+    st.download_button(
+        label="⬇️ Download Incomplete Grades PDF",
+        data=pdf_bytes,
+        file_name="incomplete_grades_report.pdf",
+        mime="application/pdf"
+    )

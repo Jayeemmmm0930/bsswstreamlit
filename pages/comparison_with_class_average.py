@@ -98,14 +98,13 @@ def get_old_curriculum_comparison(student_id):
 
 
 # ==========================
-# New Curriculum Report (per section rank + total students)
+# New Curriculum Report
 # ==========================
 def get_new_curriculum_comparison(student_id):
     grades = data_collections["newGrades"]
     subjects = {s["_id"]: s for s in data_collections["newSubjects"]}
     sections = data_collections.get("newSections", [])
 
-    # Student’s enrolled subjects
     student_grades = [g for g in grades if g.get("studentId") == student_id]
 
     records = []
@@ -114,7 +113,6 @@ def get_new_curriculum_comparison(student_id):
         subject = subjects.get(subject_id, {})
         grade = g.get("numericGrade", None)
 
-        # Find the section where this student is enrolled for this subject
         section = next(
             (sec for sec in sections if sec.get("subjectId") == subject_id and student_id in sec.get("studentIds", [])),
             None
@@ -170,6 +168,7 @@ def generate_pdf(df, fig, student_name):
     styles = getSampleStyleSheet()
     elements = []
 
+    # Title
     elements.append(Paragraph(f"Comparison with Class Average - {student_name}", styles["Title"]))
     elements.append(Spacer(1, 12))
 
@@ -177,27 +176,72 @@ def generate_pdf(df, fig, student_name):
     table_data = [df.columns.tolist()] + df.astype(str).values.tolist()
     table = Table(table_data, repeatRows=1, hAlign="LEFT")
 
+    # Base style
     style = TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F81BD")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#003366")),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ("FONTSIZE", (0, 0), (-1, -1), 9),
+        ("GRID", (0, 0), (-1, -1), 0.25, colors.grey),
+        ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+        ("TOPPADDING", (0, 0), (-1, 0), 8),
     ])
 
-    # Highlight missing grades (soft pastel yellow, dark text)
+    # Column alignment
+    col_idx = {c: i for i, c in enumerate(df.columns)}
+    if "Course Code" in col_idx:
+        style.add("ALIGN", (col_idx["Course Code"], 1), (col_idx["Course Code"], -1), "LEFT")
+    if "Course Name" in col_idx:
+        style.add("ALIGN", (col_idx["Course Name"], 1), (col_idx["Course Name"], -1), "LEFT")
+    if "Total Students" in col_idx:
+        style.add("ALIGN", (col_idx["Total Students"], 1), (col_idx["Total Students"], -1), "RIGHT")
+    if "Your Grade (%)" in col_idx:
+        style.add("ALIGN", (col_idx["Your Grade (%)"], 1), (col_idx["Your Grade (%)"], -1), "RIGHT")
+    if "Class Average (%)" in col_idx:
+        style.add("ALIGN", (col_idx["Class Average (%)"], 1), (col_idx["Class Average (%)"], -1), "RIGHT")
+    if "Your Rank" in col_idx:
+        style.add("ALIGN", (col_idx["Your Rank"], 1), (col_idx["Your Rank"], -1), "CENTER")
+    if "Remark" in col_idx:
+        style.add("ALIGN", (col_idx["Remark"], 1), (col_idx["Remark"], -1), "CENTER")
+
+    # Row striping + conditional formatting
     for i, row in df.iterrows():
+        row_idx = i + 1
+        bg_color = colors.whitesmoke if row_idx % 2 == 0 else colors.white
+        style.add("BACKGROUND", (0, row_idx), (-1, row_idx), bg_color)
+
+        # Missing grade
         if pd.isna(row["Your Grade (%)"]):
-            style.add("BACKGROUND", (3, i + 1), (3, i + 1), colors.HexColor("#FFFACD"))
-            style.add("TEXTCOLOR", (3, i + 1), (3, i + 1), colors.black)
+            style.add("BACKGROUND", (col_idx["Your Grade (%)"], row_idx),
+                      (col_idx["Your Grade (%)"], row_idx), colors.HexColor("#FFFACD"))
+            style.add("TEXTCOLOR", (col_idx["Your Grade (%)"], row_idx),
+                      (col_idx["Your Grade (%)"], row_idx), colors.black)
+        else:
+            try:
+                grade_val = float(row["Your Grade (%)"])
+                if grade_val < 60:
+                    style.add("TEXTCOLOR", (col_idx["Your Grade (%)"], row_idx),
+                              (col_idx["Your Grade (%)"], row_idx), colors.red)
+                    style.add("FONTNAME", (col_idx["Your Grade (%)"], row_idx),
+                              (col_idx["Your Grade (%)"], row_idx), "Helvetica-Bold")
+            except Exception:
+                pass
 
     table.setStyle(style)
     elements.append(table)
     elements.append(Spacer(1, 20))
 
-    # Chart
+    # Chart styling
+    fig.update_traces(marker=dict(line=dict(width=1, color="black")))
+    fig.update_layout(
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(size=10),
+    )
+
+    # Save chart as PNG
     img_buffer = io.BytesIO()
-    fig.write_image(img_buffer, format="png")
+    fig.write_image(img_buffer, format="png", scale=2)
     img_buffer.seek(0)
     elements.append(Image(img_buffer, width=500, height=300))
 
@@ -256,9 +300,7 @@ def comparison_with_class_average():
         student_name = filtered_options[student_id]
         st.subheader(f"Student: {student_id} – {student_name}")
 
-    # ==========================
-    # Load Comparison Data
-    # ==========================
+    # Load comparison data
     if curriculum == "Old Curriculum":
         df = get_old_curriculum_comparison(student_id)
     else:
@@ -284,7 +326,7 @@ def comparison_with_class_average():
         )
     )
 
-    # Graph
+    # Chart
     st.subheader("📊 Graph: Your Grade vs Class Average")
     fig = px.bar(
         df.dropna(subset=["Your Grade (%)"]),
@@ -292,7 +334,11 @@ def comparison_with_class_average():
         y=["Your Grade (%)", "Class Average (%)"],
         barmode="group",
         title="Grades vs Class Average",
-        labels={"value": "Percentage", "variable": "Legend"}
+        labels={"value": "Percentage", "variable": "Legend"},
+        color_discrete_map={
+            "Your Grade (%)": "seagreen",
+            "Class Average (%)": "steelblue"
+        }
     )
     st.plotly_chart(fig, use_container_width=True)
 

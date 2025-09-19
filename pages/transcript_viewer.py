@@ -91,15 +91,15 @@ def generate_pdf(student, df, fig):
     story = []
     styles = getSampleStyleSheet()
 
+    # ----- Title -----
     story.append(Paragraph("Academic Transcript", styles["Title"]))
     story.append(Paragraph(f"Student: {student.get('Name', student.get('name', ''))}", styles["Heading2"]))
     story.append(Spacer(1, 12))
 
-    # Add Transcript Table
+    # ----- Transcript Table -----
     table_data = [df.columns.tolist()] + df.astype(str).values.tolist()
     table = Table(table_data, repeatRows=1)
 
-    # Base table style
     style = TableStyle([
         ("BACKGROUND", (0, 0), (-1, 0), colors.grey),
         ("TEXTCOLOR", (0, 0), (-1, 0), colors.whitesmoke),
@@ -109,8 +109,8 @@ def generate_pdf(student, df, fig):
         ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
     ])
 
-    # Highlight Failed / No Grade rows
-    for i, row in enumerate(df.itertuples(), start=1):  # +1 because header row = 0
+    # Highlight failed / no grade rows
+    for i, row in enumerate(df.itertuples(), start=1):
         if row.Remark == "Failed":
             style.add("BACKGROUND", (0, i), (-1, i), colors.lightcoral)
             style.add("TEXTCOLOR", (0, i), (-1, i), colors.black)
@@ -122,12 +122,19 @@ def generate_pdf(student, df, fig):
     story.append(table)
     story.append(Spacer(1, 24))
 
-    # Save Plotly figure to PNG then embed
+    # ----- Fix Plotly Figure for PDF -----
+    fig.update_layout(
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        font=dict(color="black")
+    )
+
     img_buffer = io.BytesIO()
-    fig.write_image(img_buffer, format="png")
+    fig.write_image(img_buffer, format="png", scale=2)  # high resolution
     img_buffer.seek(0)
     story.append(Image(img_buffer, width=400, height=250))
 
+    # ----- Build PDF -----
     doc.build(story)
     buffer.seek(0)
     return buffer
@@ -146,7 +153,7 @@ def display_transcript_viewer():
     # Student Login Logic
     # ==========================
     if role == "student":
-        current_user = st.session_state.get("username")  # stores student _id or studentNumber
+        current_user = st.session_state.get("username")
         if curriculum == "Old Curriculum":
             students = {s["_id"]: s for s in data_collections["students"]}
             student = students.get(current_user)
