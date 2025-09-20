@@ -1,6 +1,11 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
+import io
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib import colors
 
 from data_collection import data_collections
 
@@ -41,7 +46,8 @@ def get_student_gpa_old(selected_prof, selected_course=None, selected_year=None,
                 "Semester": semesters.get(g["SemesterID"], {}).get("Semester", "N/A"),
                 "GPA": gpa,
                 "Professor": teacher,
-                "Subject": subj.get("Description", "Unknown")
+                "Subject": subj.get("Description", "Unknown"),
+                "Section": "N/A"  # No sections in old curriculum
             })
 
     return pd.DataFrame(rows)
@@ -50,12 +56,13 @@ def get_student_gpa_old(selected_prof, selected_course=None, selected_year=None,
 # ==========================
 # GPA Calculator (New Curriculum)
 # ==========================
-def get_student_gpa_new(selected_prof, selected_course=None, selected_year=None, selected_subject=None):
+def get_student_gpa_new(selected_prof, selected_course=None, selected_year=None, selected_subject=None, selected_section=None):
     students = {s["_id"]: s for s in data_collections["newStudents"]}
     grades = data_collections["newGrades"]
     semesters = {s["_id"]: s for s in data_collections["newSemesters"]}
     subjects = {s["_id"]: s for s in data_collections["newSubjects"]}
     professors = {p["_id"]: p for p in data_collections["newProfessors"]}
+    sections = {s["_id"]: s for s in data_collections["newSections"]}
 
     rows = []
     for g in grades:
@@ -74,6 +81,16 @@ def get_student_gpa_new(selected_prof, selected_course=None, selected_year=None,
         if selected_subject and subj.get("subjectName") != selected_subject:
             continue
 
+        # Find section(s) for this subject+student
+        section_name = None
+        for sec in sections.values():
+            if g["subjectId"] == sec.get("subjectId") and g["studentId"] in sec.get("studentIds", []):
+                section_name = sec.get("sectionName")
+                break
+
+        if selected_section and section_name != selected_section:
+            continue
+
         semester = semesters.get(g["termId"], {}).get("code", "N/A")
 
         rows.append({
@@ -84,7 +101,8 @@ def get_student_gpa_new(selected_prof, selected_course=None, selected_year=None,
             "Semester": semester,
             "GPA": g.get("numericGrade"),
             "Professor": professor,
-            "Subject": subj.get("subjectName", "Unknown")
+            "Subject": subj.get("subjectName", "Unknown"),
+            "Section": section_name or "N/A"
         })
 
     return pd.DataFrame(rows)
@@ -107,11 +125,57 @@ def calculate_trend(gpa_list):
 
 
 # ==========================
+# PDF Export Helper
+# ==========================
+def create_pdf(df, fig, selected_prof, curriculum, selected_section=None):
+    buffer = io.BytesIO()
+    doc = SimpleDocTemplate(buffer, pagesize=landscape(A4))
+    styles = getSampleStyleSheet()
+    elements = []
+
+    title = f"Student Progress Report - {selected_prof} ({curriculum})"
+    if selected_section:
+        title += f" | Section: {selected_section}"
+
+    elements.append(Paragraph(title, styles["Title"]))
+    elements.append(Spacer(1, 12))
+
+    # Format GPA to 2 decimals
+    df = df.copy()
+    if "GPA" in df.columns:
+        df["GPA"] = df["GPA"].apply(lambda x: f"{x:.2f}" if pd.notnull(x) else "—")
+
+    # Table
+    data = [df.columns.tolist()] + df.values.tolist()
+    table = Table(data, hAlign="LEFT")
+    table.setStyle(
+        TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#4F81BD")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        ])
+    )
+    elements.append(table)
+    elements.append(Spacer(1, 20))
+
+    # Chart
+    img_bytes = fig.to_image(format="png")
+    img = Image(io.BytesIO(img_bytes))
+    img._restrictSize(500, 300)
+    elements.append(img)
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+
+
+# ==========================
 # Display Function
 # ==========================
 def display_student_progress():
     st.title("🎓 Student Progress Tracker")
-    st.caption("Shows longitudinal performance for individual students. Filtered by **Professor, Subject, Course, or Year Level.**")
+    st.caption("Shows longitudinal performance for individual students. Filtered by **Professor, Subject, Course, Year Level, and Section (new curriculum only).**")
 
     curriculum = st.session_state.curriculum_type
     role = st.session_state.role
@@ -153,12 +217,19 @@ def display_student_progress():
         courses = sorted(df_all["Course"].dropna().unique())
         years = sorted(df_all["YearLevel"].dropna().astype(str).unique())
         subjects = sorted(df_all["Subject"].dropna().unique())
+        sections = sorted(df_all["Section"].dropna().unique()) if curriculum != "Old Curriculum" else []
     else:
-        courses, years, subjects = [], [], []
+        courses, years, subjects, sections = [], [], [], []
 
     selected_course = st.selectbox("Filter by Course:", ["All"] + courses)
     selected_year = st.selectbox("Filter by Year Level:", ["All"] + years)
     selected_subject = st.selectbox("Filter by Subject:", ["All"] + subjects)
+
+    selected_section = None
+    if curriculum != "Old Curriculum":
+        selected_section = st.selectbox("Filter by Section:", ["All"] + sections)
+        if selected_section == "All":
+            selected_section = None
 
     # ======================
     # Filtered Data
@@ -176,6 +247,7 @@ def display_student_progress():
             None if selected_course == "All" else selected_course,
             None if selected_year == "All" else selected_year,
             None if selected_subject == "All" else selected_subject,
+            selected_section
         )
 
     # ======================
@@ -195,7 +267,7 @@ def display_student_progress():
             for _, row in gpa_pivot.iterrows()
         ]
 
-        st.markdown(f"### 👨‍🏫 Professor: **{selected_prof}**")  # ✅ Professor label
+        st.markdown(f"### 👨‍🏫 Professor: **{selected_prof}**")
 
         st.subheader("📑 GPA Table")
         st.dataframe(gpa_pivot, use_container_width=True)
@@ -209,6 +281,15 @@ def display_student_progress():
             title=f"📈 GPA Trends"
         )
         st.plotly_chart(fig, use_container_width=True)
+
+        # PDF Download
+        pdf_buffer = create_pdf(df, fig, selected_prof, curriculum, selected_section)
+        st.download_button(
+            label="📥 Download Student Progress PDF",
+            data=pdf_buffer,
+            file_name=f"StudentProgress_{selected_prof}.pdf",
+            mime="application/pdf"
+        )
 
     else:
         st.warning(f"No GPA data available for {selected_prof} in {curriculum}.")
