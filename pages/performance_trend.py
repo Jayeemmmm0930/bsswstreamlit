@@ -34,7 +34,10 @@ def get_old_curriculum_gpa(student_id):
 
         records.append({"Semester": sem_label, "GPA": gpa})
 
-    return pd.DataFrame(records).sort_values("Semester")
+    df = pd.DataFrame(records).sort_values("Semester")
+    if not df.empty:
+        df["GPA"] = df["GPA"].round(2)
+    return df
 
 
 def get_new_curriculum_gpa(student_id):
@@ -54,6 +57,7 @@ def get_new_curriculum_gpa(student_id):
     df = pd.DataFrame(records)
     if not df.empty:
         df = df.groupby("Semester", as_index=False).mean()
+        df["GPA"] = df["GPA"].round(2)
     return df.sort_values("Semester")
 
 
@@ -69,8 +73,12 @@ def create_pdf(df, chart_bytes, student_name):
     elements.append(Paragraph(f"Performance Trend Report - {student_name}", styles["Title"]))
     elements.append(Spacer(1, 12))
 
+    # Force GPA to 2 decimals for table
+    df_display = df.copy()
+    df_display["GPA"] = df_display["GPA"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+
     # Table
-    data = [["Semester", "GPA"]] + df.astype(str).values.tolist()
+    data = [["Semester", "GPA"]] + df_display.values.tolist()
     table = Table(data, hAlign="LEFT")
     table.setStyle(
         TableStyle([
@@ -186,9 +194,22 @@ def display_trend_viewer():
     # Display Table + Chart
     # ==========================
     st.subheader("Semester GPA Progression")
-    st.table(df)
 
-    fig = px.line(df, x="Semester", y="GPA", markers=True, title="GPA Progression")
+    # Format GPA column for display
+    df_display = df.copy()
+    df_display["GPA"] = df_display["GPA"].apply(lambda x: f"{x:.2f}" if pd.notna(x) else "N/A")
+    st.table(df_display)
+
+    fig = px.line(
+        df,
+        x="Semester",
+        y="GPA",
+        markers=True,
+        title="GPA Progression"
+    )
+    fig.update_traces(hovertemplate="Semester=%{x}<br>GPA=%{y:.2f}<extra></extra>")
+    fig.update_yaxes(tickformat=".2f")
+
     chart_bytes = fig.to_image(format="png")
     st.plotly_chart(fig, use_container_width=True)
 

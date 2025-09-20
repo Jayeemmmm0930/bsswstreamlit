@@ -134,14 +134,17 @@ def generate_pdf(df, fig, professor, semester):
     ))
     elements.append(Spacer(1, 12))
 
-    # Round percentages again just in case
+    # Round + format numbers
     for col in GRADE_BINS.keys():
         if col in df.columns:
             df[col] = df[col].round(2)
 
+    # Format numbers as strings (except Total S)
+    df = df.applymap(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
+
     # Table with better layout
-    data = [list(df.columns)] + df.astype(str).values.tolist()
-    col_widths = [70, 180] + [60] * (len(df.columns) - 2)  # wider for name
+    data = [list(df.columns)] + df.values.tolist()
+    col_widths = [70, 180] + [60] * (len(df.columns) - 2)
     table = Table(data, colWidths=col_widths)
 
     style = TableStyle([
@@ -223,16 +226,18 @@ def class_distribution_view():
         st.warning("No grade distribution data found for this professor and semester.")
         return
 
-    # Round DataFrame
+    # Round + format for display
     for col in GRADE_BINS.keys():
         if col in df.columns:
             df[col] = df[col].round(2)
 
+    df_display = df.applymap(lambda x: f"{x:.2f}" if isinstance(x, float) else x)
+
     # Show Results
     st.subheader(f"📑 Grade Distribution — {professor} ({semester})")
-    st.dataframe(df, use_container_width=True)
+    st.dataframe(df_display, use_container_width=True)
 
-    # Color palette for graph (fixed)
+    # Color palette for graph
     dist_cols = list(GRADE_BINS.keys())
     color_map = {
         "95-100 (%)": "#2ca02c",
