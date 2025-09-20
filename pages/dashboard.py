@@ -1,5 +1,5 @@
 import streamlit as st
-from ..includes.sidebar import sidebar_menu 
+from includes.sidebar import sidebar_menu 
 
 def dashboard():
     """Main Dashboard that includes the sidebar"""
